@@ -18,10 +18,12 @@ module Cosmos
   class CrcProtocol < Protocol
     ERROR = "ERROR" # on CRC mismatch
     DISCONNECT = "DISCONNECT" # on CRC mismatch
+    DROP = "DROP" # on CRC mismatch
+    ERROR_DROP = "ERROR_DROP" # on CRC mismatch
 
     # @param write_item_name [String/nil] Item to fill with calculated CRC value for outgoing packets (nil = don't fill)
     # @param strip_crc [Boolean] Whether or not to remove the CRC from incoming packets
-    # @param bad_strategy [ERROR/DISCONNECT] How to handle CRC errors on incoming packets.  ERROR = Just log the error, DISCONNECT = Disconnect interface
+    # @param bad_strategy [ERROR/DISCONNECT/DROP/ERROR_DROP] How to handle CRC errors on incoming packets.  ERROR = Just log the error, DISCONNECT = Disconnect interface, DROP = Drop the packet without logging the error, ERROR_DROP = Drop the packet and log the error
     # @param bit_offset [Integer] Bit offset of the CRC in the data.  Can be negative to indicate distance from end of packet
     # @param bit_size [Integer] Bit size of the CRC - Must be 16, 32, or 64
     # @param endianness [BIG_ENDIAN/LITTLE_ENDIAN] Endianness of the CRC
@@ -49,10 +51,10 @@ module Cosmos
       raise "Invalid strip CRC of '#{strip_crc}'. Must be TRUE or FALSE." unless !!@strip_crc == @strip_crc
 
       case bad_strategy
-      when ERROR, DISCONNECT
+      when ERROR, DISCONNECT, DROP, ERROR_DROP
         @bad_strategy = bad_strategy
       else
-        raise "Invalid bad CRC strategy of #{bad_strategy}. Must be ERROR or DISCONNECT."
+        raise "Invalid bad CRC strategy of #{bad_strategy}. Must be one of ERROR, DISCONNECT, DROP or ERROR_DROP."
       end
 
       case endianness.to_s.upcase
@@ -140,9 +142,15 @@ module Cosmos
       crc = BinaryAccessor.read(@bit_offset, @bit_size, :UINT, data, @endianness)
       calculated_crc = @crc.calc(data[0...(@bit_offset / 8)])
       if calculated_crc != crc
-        Logger.error "Invalid CRC detected! Calculated 0x#{calculated_crc.to_s(16).upcase} vs found 0x#{crc.to_s(16).upcase}."
-        if @bad_strategy == DISCONNECT
+        case @bad_strategy
+        when ERROR, DISCONNECT, ERROR_DROP
+          Logger.error "Invalid CRC detected! Calculated 0x#{calculated_crc.to_s(16).upcase} vs found 0x#{crc.to_s(16).upcase}."
+        end
+        case @bad_strategy
+        when DISCONNECT
           return :DISCONNECT
+        when DROP, ERROR_DROP
+          return :STOP
         end
       end
       if @strip_crc
@@ -153,6 +161,9 @@ module Cosmos
         return new_data
       end
       return data
+    end
+
+    def log_crc_error(calculated_crc, crc)
     end
 
     def write_packet(packet)

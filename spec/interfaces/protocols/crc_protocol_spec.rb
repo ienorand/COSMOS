@@ -46,7 +46,7 @@ module Cosmos
         end
       end
 
-      it "complains if bad strategy is not ERROR or DISCONNECT" do
+      it "complains if bad strategy is not ERROR, DISCONNECT, DROP or ERROR_DROP" do
         ['BAD', 0, nil].each do |strategy|
           expect { @interface.add_protocol(CrcProtocol, [
             nil, # item name
@@ -526,6 +526,55 @@ module Cosmos
         end
         packet = @interface.read
         expect(packet).to be_nil # thread disconnects when packet is nil
+      end
+
+      it "drops the packet silently and asks for more data if the CRC does not match" do
+        @interface.instance_variable_set(:@stream, CrcStream.new)
+        @interface.add_protocol(BurstProtocol, [], :READ_WRITE)
+        @interface.add_protocol(CrcProtocol, [
+          'CRC', # item name
+          'FALSE', # strip crc
+          'DROP', # bad strategy
+          -32, # bit offset
+           32], # bit size
+          :READ_WRITE)
+        @interface.target_names = ['TGT']
+        packet = Packet.new('TGT', 'PKT')
+        packet.append_item("DATA", 32, :UINT)
+        packet.append_item("CRC", 32, :UINT)
+
+        buffer = "\x00\x01\x02\x03"
+        crc = crc32.calc(buffer)
+        buffer << [crc].pack("N")
+        buffer[0] = "\x01"
+
+        expect(@interface.read_protocols[1].read_data(buffer)).to eql :STOP
+      end
+
+      it "drops the packet, logs an error and asks for more data if the CRC does not match" do
+        @interface.instance_variable_set(:@stream, CrcStream.new)
+        @interface.add_protocol(BurstProtocol, [], :READ_WRITE)
+        @interface.add_protocol(CrcProtocol, [
+          'CRC', # item name
+          'FALSE', # strip crc
+          'ERROR_DROP', # bad strategy
+          -32, # bit offset
+           32], # bit size
+          :READ_WRITE)
+        @interface.target_names = ['TGT']
+        packet = Packet.new('TGT', 'PKT')
+        packet.append_item("DATA", 32, :UINT)
+        packet.append_item("CRC", 32, :UINT)
+
+        buffer = "\x00\x01\x02\x03"
+        crc = crc32.calc(buffer)
+        buffer << [crc].pack("N")
+        buffer[0] = "\x01"
+
+        expect(Logger).to receive(:error) do |msg|
+          expect(msg).to match("Invalid CRC detected!")
+        end
+        expect(@interface.read_protocols[1].read_data(buffer)).to eql :STOP
       end
 
       it "can strip the 16 bit CRC at the end" do
